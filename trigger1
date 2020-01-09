@@ -1,0 +1,295 @@
+USE [DOCTORVETBASE] 
+
+go 
+
+/****** Object:  Trigger [dbo].[tr_tb_produtosestoqueempresa_u]    Script Date: 09/01/2020 02:47:33 ******/ 
+SET ansi_nulls ON 
+
+go 
+
+SET quoted_identifier ON 
+
+go 
+
+ALTER TRIGGER [dbo].[tr_tb_produtosestoqueempresa_u] 
+ON [dbo].[tb_produtosestoqueempresa] 
+after UPDATE 
+AS 
+    DECLARE @var_tipo VARCHAR(1); 
+    DECLARE @var_id_produto INT; 
+    DECLARE @var_id_almox INT; 
+    DECLARE @var_id_produto_empresa INT; 
+    DECLARE @var_id_produto_estoque_empresa INT; 
+    DECLARE @var_qt_ant FLOAT; 
+    DECLARE @var_qt_mov FLOAT; 
+    DECLARE @var_qt_atual FLOAT; 
+    DECLARE @var_custo MONEY; 
+    DECLARE @var_origem VARCHAR(30); 
+    DECLARE @var_usuario VARCHAR(30); 
+    DECLARE @var_NumDoc INT; 
+    DECLARE @var_estornado BIT; 
+    DECLARE @var_vlr_unit MONEY; 
+    DECLARE @var_vlr_icms MONEY; 
+    DECLARE @var_vlr_icms_st MONEY; 
+    DECLARE @var_vlr_ipi MONEY; 
+    DECLARE @var_vlr_desc MONEY; 
+    DECLARE @var_vlr_frete MONEY; 
+    DECLARE @var_vlr_seguro MONEY; 
+    DECLARE @var_vlr_desp_acess MONEY; 
+    DECLARE @var_vlr_custo_total_atual MONEY; 
+    DECLARE @var_vlr_custo_mov MONEY; 
+    DECLARE @var_id_departamento INT; 
+    DECLARE @var_id_subunidade INT; 
+    DECLARE @var_id_subunidade_setor INT; 
+    DECLARE @var_operacao VARCHAR(50); 
+    DECLARE @var_vlr_custo_medio MONEY; 
+    DECLARE @vlr_custo_medio_anterior MONEY; 
+    DECLARE cur_estoque_u CURSOR FOR 
+      SELECT id_produtoestoqueempresa, 
+             id_produto, 
+             id_almoxarifado, 
+             id_produtoempresa, 
+             Cast(estoque_quantidade AS NUMERIC(18, 3)) AS Estoque_Quantidade, 
+             vlr_custo_total_calc, 
+             id_departamento, 
+             id_subunidade, 
+             id_subunidade_setor, 
+             operacao 
+      FROM   inserted; 
+
+    SET @var_qt_ant = 0; 
+    SET @var_qt_mov = 0; 
+    SET @var_origem = ''; 
+    SET @var_usuario = ''; 
+    SET @var_NumDoc = 0; 
+    SET @var_vlr_unit = 0; 
+    SET @var_vlr_icms = 0; 
+    SET @var_vlr_icms_st = 0; 
+    SET @var_vlr_ipi = 0; 
+
+    OPEN cur_estoque_u; 
+
+    FETCH next FROM cur_estoque_u INTO @var_id_produto_estoque_empresa, 
+    @var_id_produto, @var_id_almox, @var_id_produto_empresa, @var_qt_atual, 
+    @var_vlr_custo_total_atual, @var_id_departamento, @var_id_subunidade, 
+    @var_id_subunidade_setor, @var_operacao; 
+
+    WHILE( @@FETCH_STATUS = 0 ) 
+      BEGIN 
+          IF ( @var_id_almox IS NULL 
+                OR @var_id_almox = 0 ) 
+            RAISERROR('id_almoxarifado não definido',0,0); 
+
+          IF ( @var_id_produto_empresa IS NULL 
+                OR @var_id_produto_empresa = 0 ) 
+            RAISERROR('@id_produto_empresa não definido',0,0); 
+
+          SELECT @var_origem = origementradasaida, 
+                 @var_usuario = usuarioorigem, 
+                 @var_NumDoc = num_doc, 
+                 @var_vlr_unit = vlr_unit_item_aux, 
+                 @var_vlr_icms = vlr_icms_aux, 
+                 @var_vlr_icms_st = vlr_icms_st_aux, 
+                 @var_vlr_ipi = vlr_ipi_aux, 
+                 @var_estornado = estorno_aux, 
+                 @var_vlr_desc = vlr_desc_aux, 
+                 @var_vlr_frete = vlr_frete_aux, 
+                 @var_vlr_seguro = vlr_seguro_aux, 
+                 @var_vlr_desp_acess = vlr_desp_acess_aux, 
+                 @var_vlr_custo_medio = precomediocusto, 
+                 @vlr_custo_medio_anterior = precomediocusto_anterior 
+          FROM   tb_produtoscadastroempresa 
+          WHERE  id_produtoempresa = @var_id_produto_empresa; 
+
+          IF ( @var_qt_atual IS NULL ) 
+            SET @var_qt_atual = 0; 
+
+          IF ( @var_origem IS NULL ) 
+            SET @var_origem = ''; 
+
+          IF ( @var_usuario IS NULL ) 
+            SET @var_usuario = ''; 
+
+          IF ( @var_NumDoc IS NULL ) 
+            SET @var_NumDoc = 0; 
+
+          IF ( @var_vlr_unit IS NULL ) 
+            SET @var_vlr_unit = 0; 
+
+          IF ( @var_vlr_icms IS NULL ) 
+            SET @var_vlr_icms = 0; 
+
+          IF ( @var_vlr_icms_st IS NULL ) 
+            SET @var_vlr_icms_st = 0; 
+
+          IF ( @var_vlr_ipi IS NULL ) 
+            SET @var_vlr_ipi = 0; 
+
+          IF ( @var_vlr_desc IS NULL ) 
+            SET @var_vlr_desc = 0; 
+
+          IF ( @var_vlr_frete IS NULL ) 
+            SET @var_vlr_frete = 0; 
+
+          IF ( @var_vlr_seguro IS NULL ) 
+            SET @var_vlr_seguro = 0; 
+
+          IF ( @var_vlr_desp_acess IS NULL ) 
+            SET @var_vlr_desp_acess = 0; 
+
+          IF ( @var_estornado IS NULL ) 
+            SET @var_estornado = 0; 
+
+          IF ( @var_vlr_custo_total_atual IS NULL 
+                OR @var_vlr_custo_total_atual < 0 ) 
+            SET @var_vlr_custo_total_atual = 0; 
+
+          SET @var_qt_ant = (SELECT TOP 1 estoque_quantidade 
+                             FROM   deleted 
+                             WHERE  id_produtoestoqueempresa = 
+                                    @var_id_produto_estoque_empresa); 
+          SET @var_qt_mov = ( @var_qt_atual - @var_qt_ant ); 
+
+          IF ( @var_qt_mov > 0 ) 
+            BEGIN 
+                SET @var_tipo = 'E'; 
+                SET @var_vlr_custo_mov = ( @var_qt_mov * @var_vlr_unit ) 
+                                         - @var_vlr_desc + 
+                                         @var_vlr_frete + 
+                                         @var_vlr_seguro + 
+                                         @var_vlr_desp_acess + 
+                                         @var_vlr_icms_st + 
+                                         @var_vlr_ipi; 
+            END 
+          ELSE IF ( @var_estornado = 1 ) 
+            BEGIN 
+                SET @var_tipo = 'S'; 
+                SET @var_vlr_custo_mov = ( @var_qt_mov * @var_vlr_unit ) 
+                                         - @var_vlr_desc + 
+                                         @var_vlr_frete + 
+                                         @var_vlr_seguro + 
+                                         @var_vlr_desp_acess + 
+                                         @var_vlr_icms_st + 
+                                         @var_vlr_ipi; 
+            END 
+          ELSE IF ( @var_qt_mov < 0 ) 
+            BEGIN 
+                SET @var_tipo = 'S'; 
+                SET @var_vlr_custo_mov = 0; 
+
+                IF ( @var_qt_ant > 0 ) 
+                  SET @var_vlr_custo_mov = Round( 
+                  @var_vlr_custo_total_atual / @var_qt_ant 
+                  * 
+                                         @var_qt_mov, 4); 
+            END; 
+
+          IF ( @var_qt_mov <> 0 ) 
+            BEGIN 
+                SELECT @var_custo = ( CASE 
+                                        WHEN ( ( CASE 
+                                                   WHEN [vlr_custo_total_calc] 
+                                                        IS 
+                                                        NULL 
+                                                 THEN 
+                                                   0 
+                                                   ELSE [vlr_custo_total_calc] 
+                                                 END ) + @var_vlr_custo_mov ) <= 
+                                             0 
+                                              OR @var_qt_atual = 0 THEN 0 
+                                        ELSE ( ( CASE 
+                                                   WHEN [vlr_custo_total_calc] 
+                                                        IS 
+                                                        NULL 
+                                                 THEN 
+                                                   0 
+                                                   ELSE [vlr_custo_total_calc] 
+                                                 END ) + @var_vlr_custo_mov ) 
+                                      END ) 
+                FROM   [tb_produtosestoqueempresa] 
+                WHERE  [id_produtoestoqueempresa] = 
+                       @var_id_produto_estoque_empresa; 
+
+                EXEC Sp_evolucaoestoque 
+                  @var_id_produto, 
+                  @var_id_almox, 
+                  @var_id_produto_empresa, 
+                  @var_id_produto_estoque_empresa, 
+                  @var_tipo, 
+                  @var_qt_ant, 
+                  @var_qt_mov, 
+                  @var_qt_atual, 
+                  @var_custo, 
+                  @var_origem, 
+                  @var_usuario, 
+                  @var_NumDoc, 
+                  @var_vlr_unit, 
+                  @var_vlr_icms, 
+                  @var_vlr_icms_st, 
+                  @var_vlr_ipi, 
+                  @var_vlr_desc, 
+                  @var_vlr_frete, 
+                  @var_vlr_seguro, 
+                  @var_vlr_desp_acess, 
+                  @var_id_departamento, 
+                  @var_id_subunidade, 
+                  @var_id_subunidade_setor, 
+                  @var_operacao, 
+                  @var_vlr_custo_medio, 
+                  @vlr_custo_medio_anterior; 
+
+                UPDATE [tb_produtosestoqueempresa] 
+                SET    [vlr_custo_total_calc] = ( CASE 
+                                                    WHEN 
+                       ( ( CASE 
+                             WHEN [vlr_custo_total_calc] 
+                                  IS 
+                                  NULL THEN 
+                             0 
+                             ELSE [vlr_custo_total_calc] 
+                           END ) + @var_vlr_custo_mov ) <= 
+                       0 
+                        OR @var_qt_atual = 0 THEN 0 
+                                                    ELSE 
+                       ( ( CASE 
+                             WHEN [vlr_custo_total_calc] 
+                                  IS 
+                                  NULL THEN 
+                             0 
+                             ELSE [vlr_custo_total_calc] 
+                           END ) + @var_vlr_custo_mov ) 
+                                                  END ) 
+                WHERE  [id_produtoestoqueempresa] = 
+                       @var_id_produto_estoque_empresa; 
+
+                UPDATE [tb_produtoscadastroempresa] 
+                SET    [vlr_custo_total_calc] = 
+                       (SELECT Sum(CASE 
+                       WHEN [est].[vlr_custo_total_calc] 
+                            IS NULL 
+                            THEN 0 
+                       ELSE [est].[vlr_custo_total_calc] 
+                                   END) 
+                        FROM 
+                       tb_produtosestoqueempresa est 
+                       INNER JOIN tb_almoxarifado alm 
+                               ON alm.id_almoxarifado 
+                                  = 
+                                  est.id_almoxarifado 
+                                                 WHERE 
+                       [est].[id_produtoempresa] = 
+                       [tb_produtoscadastroempresa].[id_produtoempresa] 
+                       AND [alm].[id_almox_tipoentrada] IN( 1, 2 )) 
+                WHERE  [id_produtoempresa] = @var_id_produto_empresa; 
+            END; 
+
+          FETCH next FROM cur_estoque_u INTO @var_id_produto_estoque_empresa, 
+          @var_id_produto, @var_id_almox, @var_id_produto_empresa, @var_qt_atual 
+          , 
+          @var_vlr_custo_total_atual, @var_id_departamento, @var_id_subunidade, 
+          @var_id_subunidade_setor, @var_operacao; 
+      END 
+
+    CLOSE cur_estoque_u; 
+
+    DEALLOCATE cur_estoque_u; 
