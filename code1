@@ -1,0 +1,236 @@
+'-------------------------------------------------------------------------------------------------------
+' -> Desenvolvedor    : Aiury Guilherme
+' -> Data             : 25/10/2019
+' -> Propósito        : Unifica registros dos lotes caso sejam do mesmo produto e tenham o mesmo número.
+'-------------------------------------------------------------------------------------------------------
+Private Function fun068346() As Boolean
+
+    Dim strQuery                    As String
+    Dim rsLotes                     As ADODB.Recordset
+    Dim rsLotes_Aux                 As ADODB.Recordset
+    Dim rsNotaItens                 As ADODB.Recordset
+    
+    Dim rsConfig                    As ADODB.Recordset
+    
+    Dim blnIntegradoSYSTEM1         As Boolean
+    Dim blnTransacaoAtiva           As Boolean
+    Dim blnJaExecutou               As Boolean
+
+    Dim lngIdItemNF                 As Long
+    Dim lngIdAlmox                  As Long
+    Dim lngIdLoteEstoque            As Long
+    Dim lngIdAlmox_Anterior         As Long
+    Dim lngIdLoteDefinitivo         As Long
+    Dim lngIdIntegracaoDefinitivo   As Long
+
+    Dim dblSaldoTotal               As Double
+
+    Const CO_NRPROCESSO             As String = "006542"
+    Const virgula                   As String = ","
+    
+    ' -> Ativa tratamento de erros <-
+    On Local Error GoTo Erro_Processamento
+
+    If Not funProcessamentoPendente(CO_NRPROCESSO) Then
+        fun068346 = (Not vlblErrLock)
+        Exit Function
+    End If
+
+    ' -> Executa rotinas <-
+    GoSub sbExecute
+
+    ' -> Adiciona processamento à lista de processamentos executados <-
+    If Not funAddProcess(CO_NRPROCESSO) Then Exit Function
+
+    fun068346 = True
+
+    Exit Function
+
+sbExecute:
+    
+    ' -> Corrige erro na importação de lotes em que o status estava sendo gravado 0,
+    ' -> que na verdade é o status de BAIXADO, e tinha que ser 1, ativo.
+    strQuery = "UPDATE tb_produtoscadastrolotes " & vbCrLf
+    strQuery = strQuery & "SET          Status = " & TipoLote.Ativo & vbCrLf
+    strQuery = strQuery & "WHERE        id_resp_baixa = null" & vbCrLf
+    Call banco.Execute(strQuery, , ExecuteOptionEnum.adExecuteNoRecords)
+    
+    blnJaExecutou = IIf(RecuperaDescricao("tb_ProdutosCadastroLotes_Estoque", "Id_Lote_Estoque", "1", "1") <> "", True, False)
+    ' -> Evita corrompimento de banco saindo do processamento caso a tabela que sempre
+    ' -> será preenchida pela primeira vez nesta função já tenha registro.
+    If blnJaExecutou Then GoTo sai
+    
+    ' -> Instancia recordset's.
+    Set rsLotes = New ADODB.Recordset
+    Set rsLotes_Aux = New ADODB.Recordset
+    Set rsNotaItens = New ADODB.Recordset
+    
+    RecuperaConfiguracoes rsConfig
+    blnIntegradoSYSTEM1 = IIf(NVL(rsConfig!id_sistema_integracao, 0) = 1, True, False)
+
+    ' -> Agrupa todos os lotes por número.
+    strQuery = "SELECT id_produto, " & vbCrLf
+    strQuery = strQuery & "       num_lote " & vbCrLf
+    strQuery = strQuery & "FROM   tb_produtoscadastrolotes " & vbCrLf
+    strQuery = strQuery & "WHERE  id_produto <> 0 " & vbCrLf
+    strQuery = strQuery & "GROUP  BY id_produto, " & vbCrLf
+    strQuery = strQuery & "          num_lote " & vbCrLf
+    strQuery = strQuery & "ORDER  BY id_produto, " & vbCrLf
+    strQuery = strQuery & "          num_lote " & vbCrLf
+
+    With rsLotes
+        .CursorLocation = adUseClient
+        .Open strQuery, banco, adOpenForwardOnly, adLockReadOnly
+
+        ' -> Se tiver registros na tabela de lotes, inicia transação e contador do recordcount.
+        If Not .EOF Then
+            banco.BeginTrans
+            blnTransacaoAtiva = True
+            
+            strQuery = "DISABLE TRIGGER [tr_tb_ProdutosCadastroLotes_Estoque_i]" & vbCrLf
+            strQuery = strQuery & "ON [tb_ProdutosCadastroLotes_Estoque]" & vbCrLf
+            Call banco.Execute(strQuery, , ExecuteOptionEnum.adExecuteNoRecords)
+            
+            strQuery = "DISABLE TRIGGER [tr_tb_ProdutosCadastroLotes_Estoque_u]" & vbCrLf
+            strQuery = strQuery & "ON [tb_ProdutosCadastroLotes_Estoque]" & vbCrLf
+            Call banco.Execute(strQuery, , ExecuteOptionEnum.adExecuteNoRecords)
+                
+                
+            sbIniciarContadorProgressao .RecordCount
+        End If
+        Do While Not .EOF
+            ' -> Pesquisa os lotes de mesmo número e mesmo produto para unificação em apenas um registro.
+            strQuery = "SELECT * " & vbCrLf
+            strQuery = strQuery & "FROM   tb_produtoscadastrolotes " & vbCrLf
+            strQuery = strQuery & "WHERE  id_produto = " & !id_produto & vbCrLf
+            strQuery = strQuery & "       AND num_lote = '" & !Num_Lote & "'" & vbCrLf
+            rsLotes_Aux.CursorLocation = adUseClient
+            rsLotes_Aux.Open strQuery, banco, adOpenForwardOnly, adLockReadOnly
+            
+            ' -> Recupera o último id_lote, que será o único no banco no pós-processamento(pro número e pro produto).
+            rsLotes_Aux.MoveLast
+            lngIdLoteDefinitivo = rsLotes_Aux!id_lote
+            lngIdIntegracaoDefinitivo = NVL(rsLotes_Aux!Id_Lote_Integracao, 0)
+            rsLotes_Aux.MoveFirst
+            
+            Do While Not rsLotes_Aux.EOF
+
+                ' -> Recupera Item da nota que lançou o lote.
+                lngIdItemNF = NVL(RecuperaDescricao("tb_notafiscal_itens", "id_itensnotafiscal", "id_lote", rsLotes_Aux!id_lote), 0)
+                If lngIdItemNF = 0 Then
+                    ' -> O almox central da UPF não fica no DrVet, então vamos jogar os lotes sem nota na farmácia mesmo;
+                    If blnIntegradoSYSTEM1 Then
+                        lngIdAlmox = 101    ' -> Farmacy
+                    Else
+                        lngIdAlmox = 102    ' -> Almox
+                    End If
+                Else
+                    strQuery = "SELECT id_notafiscal, " & vbCrLf
+                    strQuery = strQuery & "       eee.id_almoxarifado, " & vbCrLf
+                    strQuery = strQuery & "       nfi.quantidade " & vbCrLf
+                    strQuery = strQuery & "FROM   tb_notafiscal_itens nfi " & vbCrLf
+                    strQuery = strQuery & "       INNER JOIN tb_produtosestoqueempresa eee " & vbCrLf
+                    strQuery = strQuery & "               ON nfi.id_produtoestoqueempresa = eee.id_produtoestoqueempresa " & vbCrLf
+                    strQuery = strQuery & "WHERE  id_itensnotafiscal = " & lngIdItemNF & vbCrLf
+                    rsNotaItens.CursorLocation = adUseClient
+                    rsNotaItens.Open strQuery, banco, adOpenForwardOnly, adLockReadOnly
+                    
+                    ' -> Insere na tabela de lotes-itens, os itens de nota fiscal com seus respectivos lotes.
+                    strQuery = "INSERT INTO tb_NotaFiscal_Itens_LotesDeValidade " & vbCrLf
+                    strQuery = strQuery & "VALUES      ((select Isnull(Max(id_itensnotafiscal_lote), 0) + 1 from tb_NotaFiscal_Itens_LotesDeValidade) " & virgula & vbCrLf
+                    strQuery = strQuery & "             " & lngIdItemNF & virgula & vbCrLf
+                    strQuery = strQuery & "             " & rsNotaItens!Id_NotaFiscal & virgula & vbCrLf
+                    strQuery = strQuery & "             " & !id_produto & virgula & vbCrLf
+                    strQuery = strQuery & "             " & lngIdLoteDefinitivo & virgula & vbCrLf
+                    strQuery = strQuery & "             " & str(rsNotaItens!Quantidade) & ") " & vbCrLf
+                    Call banco.Execute(strQuery, , ExecuteOptionEnum.adExecuteNoRecords)
+
+                    lngIdAlmox = rsNotaItens!Id_Almoxarifado
+                    
+                End If
+                
+                ' -> Acumula saldo do registro do almox se os almoxarifados dos lotes forem iguais.
+                If lngIdAlmox = lngIdAlmox_Anterior Then
+                    dblSaldoTotal = dblSaldoTotal + rsLotes_Aux!Saldo_Atual
+                Else
+                    dblSaldoTotal = rsLotes_Aux!Saldo_Atual
+                End If
+                
+                ' -> Insere ou incremente o saldo por almoxarifado do lote de acordo com registros.
+                lngIdLoteEstoque = NVL(RecuperaDescricao("tb_produtoscadastrolotes_estoque", "id_lote_estoque", "id_lote", lngIdLoteDefinitivo, True, "id_almoxarifado = " & lngIdAlmox), 0)
+                If lngIdLoteEstoque = 0 Then
+                    strQuery = "INSERT INTO tb_produtoscadastrolotes_estoque (Id_Lote_Estoque,Id_Lote,Id_Produto,Id_Almoxarifado,Saldo_Atual)" & vbCrLf
+                    strQuery = strQuery & "VALUES      ((select Isnull(Max(id_lote_estoque), 0) + 1 from tb_produtoscadastrolotes_estoque)" & virgula & vbCrLf
+                    strQuery = strQuery & "             " & lngIdLoteDefinitivo & virgula & vbCrLf
+                    strQuery = strQuery & "             " & !id_produto & virgula & vbCrLf
+                    strQuery = strQuery & "             " & lngIdAlmox & virgula & vbCrLf
+                    strQuery = strQuery & "             " & str(dblSaldoTotal) & ") " & vbCrLf
+                Else
+                    strQuery = "UPDATE tb_produtoscadastrolotes_estoque " & vbCrLf
+                    strQuery = strQuery & "SET          Saldo_Atual = " & str(dblSaldoTotal) & vbCrLf
+                    strQuery = strQuery & "WHERE        Id_Lote_Estoque = " & lngIdLoteEstoque & vbCrLf
+                End If
+                Call banco.Execute(strQuery, , ExecuteOptionEnum.adExecuteNoRecords)
+                lngIdLoteEstoque = NVL(RecuperaDescricao("tb_produtoscadastrolotes_estoque", "id_lote_estoque", "id_lote", lngIdLoteDefinitivo, True, "id_almoxarifado = " & lngIdAlmox), 0)
+                
+                ' -> No momento que rodar este processamento somente a SYSTEM2 terá movimentações nesta tabela,
+                ' -> logo, atualiza fixo os id's novos com os únicos possíveis.
+                strQuery = "UPDATE tb_ProdutosCadastroLotesEvolucao " & vbCrLf
+                strQuery = strQuery & "SET          Id_Lote = " & lngIdLoteDefinitivo & vbCrLf
+                strQuery = strQuery & "            ,Quantidade_Movimentada = Qtde_Evolucao" & vbCrLf
+                strQuery = strQuery & "WHERE        Id_Lote = " & rsLotes_Aux!id_lote & vbCrLf
+                Call banco.Execute(strQuery, , ExecuteOptionEnum.adExecuteNoRecords)
+                
+                strQuery = "UPDATE tb_ProdutosCadastroLotesEvolucao " & vbCrLf
+                strQuery = strQuery & "SET          Id_Almoxarifado = 102" & vbCrLf
+                strQuery = strQuery & "            ,Id_Lote_Estoque = " & lngIdLoteEstoque & vbCrLf
+                strQuery = strQuery & "            ,Quantidade_Movimentada = Quantidade_Movimentada * -1" & vbCrLf
+                strQuery = strQuery & "WHERE        Id_Lote = " & lngIdLoteDefinitivo & vbCrLf
+                Call banco.Execute(strQuery, , ExecuteOptionEnum.adExecuteNoRecords)
+        
+                ' -> Se não for o lote definitivo, inativa na tabela.
+                If rsLotes_Aux!id_lote <> lngIdLoteDefinitivo Then
+                    strQuery = "UPDATE tb_produtoscadastrolotes " & vbCrLf
+                    strQuery = strQuery & "SET          Status = " & TipoLote.inativo & vbCrLf
+                    strQuery = strQuery & "            ,id_lote_integracao = " & lngIdIntegracaoDefinitivo & vbCrLf
+                    strQuery = strQuery & "WHERE        id_lote = " & rsLotes_Aux!id_lote & vbCrLf
+                    Call banco.Execute(strQuery, , ExecuteOptionEnum.adExecuteNoRecords)
+                End If
+                    
+                lngIdAlmox_Anterior = lngIdAlmox
+                
+                If rsNotaItens.State = adStateOpen Then rsNotaItens.Close
+                rsLotes_Aux.MoveNext
+            Loop
+
+            rsLotes_Aux.Close
+            lngIdAlmox_Anterior = 0
+            
+            sbIncrementaContador
+            .MoveNext
+        Loop
+        
+        If blnTransacaoAtiva Then
+            strQuery = "ENABLE TRIGGER [tr_tb_ProdutosCadastroLotes_Estoque_i]" & vbCrLf
+            strQuery = strQuery & "ON [tb_ProdutosCadastroLotes_Estoque]" & vbCrLf
+            Call banco.Execute(strQuery, , ExecuteOptionEnum.adExecuteNoRecords)
+            
+            strQuery = "ENABLE TRIGGER [tr_tb_ProdutosCadastroLotes_Estoque_u]" & vbCrLf
+            strQuery = strQuery & "ON [tb_ProdutosCadastroLotes_Estoque]" & vbCrLf
+            Call banco.Execute(strQuery, , ExecuteOptionEnum.adExecuteNoRecords)
+            
+            banco.CommitTrans
+            blnTransacaoAtiva = False
+        End If
+        .Close
+    End With
+sai:
+    Return
+
+Erro_Processamento:
+    Screen.MousePointer = 0
+    vMsgErr = "Erro ao executar processamento " & CO_NRPROCESSO & "." & vbCr & _
+              "Erro: " & Err & " - " & Err.Description
+    MsgBox vMsgErr, vbCritical, "Processamentos"
+    On Local Error GoTo 0
+End Function
